@@ -365,14 +365,17 @@ fn main()
 
 	// exit() is here to prevent destructors from being run, which adds a second or two to runtime
 	std::process::exit(
-		rkd.diff(&logL,&logR).unwrap_or_else(|e| {
-			use inline_colorization::*;
-			const cbr: &str = color_bright_red;
-			const cr: &str = color_reset;
+		match rkd.diff(&logL,&logR) {
+			Ok(code) => code,
+			Err(e) => {
+				use inline_colorization::*;
+				const cbr: &str = color_bright_red;
+				const cr: &str = color_reset;
 
-			eprintln!("{cbr}[ERROR]: {cr}{}", e);
-			1 // exit with exit code 1 to indicate failure
-		}));
+				eprintln!("{cbr}[ERROR]: {cr}{}", e);
+				1 // exit with error code 1
+			}
+		});
 }
 
 enum FSOp<'a>
@@ -553,7 +556,7 @@ impl RKD
 		}
 	}
 
-	fn diff(&mut self,logL: &Vec<&str>,logR: &Vec<&str>) -> Result<i32, Box<dyn Error>>
+	fn diff(&mut self, logL: &Vec<&str>, logR: &Vec<&str>) -> Result<i32, Box<dyn Error + '_>>
 	{
 		assert_eq!(self.sides.len(),0);
 
@@ -578,7 +581,6 @@ impl RKD
 
 		Ok(0)
 	}
-
 	fn diff_remaining(&self)
 	{
 		let _timer = ScopeTimer::new(args.timings,"diff_remaining");
@@ -730,9 +732,11 @@ impl RKD
 		false // Either there's no hash, it hasn't been seen before, or the sizes match
 	}
 
-	fn parse_side(&mut self, log: &Vec<&str>, excludes: &[String], ambiguousFileCount: &mut usize) -> Result<String, Box<dyn Error>>
+	fn parse_side(&mut self, log: &Vec<&str>, excludes: &[String], ambiguousFileCount: &mut usize) -> Result<(), Box<dyn Error + '_>>
 	{
 		assert!(self.sides.len() < 2);
+
+		let _timer = ScopeTimer::new(args.timings,"parse_log");
 
 		let side = self.sides.len();
 
@@ -742,7 +746,7 @@ impl RKD
 
 		'line_parser: for line in log 
 		{
-			let parsed = LogLine::parse(&line, ambiguousFileCount, side)?;
+			let (_, parsed) = LogLine::parse(&line, ambiguousFileCount, side)?;
 
 			if parsed.is_none() {continue;}
 
@@ -872,7 +876,7 @@ fn hexhash(input: &str) -> nom::IResult<&str,Option<Hash>>
 
 impl LogLine
 {
-	fn parse<'a>(input: &'a str,ambiguousFileCount: &mut usize,side: usize) -> Result<nom::IResult<&'a str,Option<Self>>, Box<dyn Error>>
+	fn parse<'a>(input: &'a str, ambiguousFileCount: &mut usize, side: usize) -> nom::IResult<&'a str, Option<Self>>
 	{
 		use nom::{
 			sequence::*,
