@@ -1082,7 +1082,7 @@ mod tests {
     #[test]
     fn test_md5deep_log_line_parse_success() {
         // Example of a valid log line in the format: <size>  <md5hash>  <filepath>
-        let log_line = "7d9c8a8f75cfd85dfbe8d4ec4b2d5c3e  /path/to/some/file.txt";
+        let log_line = "b1946ac92492d2347c6235b4d2611184  /path/to/some/file.txt";
         let mut ambiguous_count = 0;
 
         // Parse the log line
@@ -1109,7 +1109,7 @@ mod tests {
         assert!(parsed.hash.is_some(), "Hash should be present");
         assert_eq!(
             parsed.hash.unwrap().to_string(),
-            "7d9c8a8f75cfd85dfbe8d4ec4b2d5c3e",
+            "b1946ac92492d2347c6235b4d2611184",
             "Hash should match"
         );
         assert_eq!(parsed.path, "/path/to/some/file.txt", "Path should match");
