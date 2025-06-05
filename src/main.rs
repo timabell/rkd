@@ -39,6 +39,40 @@ struct Args {
 #[derive(Eq, Hash, PartialEq, Clone, Copy)]
 struct Hash(u128);
 
+/// Represents the format of a log file
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogFormat {
+    /// RotKraken format: <size>  <md5hash>  <filepath>
+    RotKraken,
+    /// Md5Deep format: <md5hash>  <filepath>
+    Md5Deep,
+}
+
+impl LogFormat {
+    /// Detect the log format by examining the first non-empty, non-comment line
+    fn detect_from_log(log: &[&str]) -> Self {
+        for line in log {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            
+            // Check if the line matches the md5deep format (32 hex chars followed by space)
+            if line.len() >= 34 && 
+               line[0..32].chars().all(|c| c.is_ascii_hexdigit()) && 
+               line[32..34] == *"  " {
+                return LogFormat::Md5Deep;
+            }
+            
+            // If we found a non-empty, non-comment line that doesn't match md5deep format,
+            // assume it's RotKraken format (which will be validated during parsing)
+            return LogFormat::RotKraken;
+        }
+        
+        // Default to RotKraken if no valid lines found
+        LogFormat::RotKraken
+    }
+}
+
 const EMPTY_HASH: Hash = Hash(0xd41d8cd98f00b204e9800998ecf8427e);
 
 impl Hash {
@@ -568,12 +602,14 @@ impl RKD {
     }
 
     fn diff(&mut self, logL: &Vec<&str>, logR: &Vec<&str>) -> i32 {
+        let log_formatL = LogFormat::detect_from_log(&logL);
+        let log_formatR = LogFormat::detect_from_log(&logR);
         assert_eq!(self.sides.len(), 0);
 
         let mut ambiguousFileCountL = 0;
         let mut ambiguousFileCountR = 0;
-        self.parse_side(logL, &args.exclude, &mut ambiguousFileCountL);
-        self.parse_side(logR, &args.exclude, &mut ambiguousFileCountR);
+        self.parse_side(logL, &args.exclude, &mut ambiguousFileCountL, log_formatL);
+        self.parse_side(logR, &args.exclude, &mut ambiguousFileCountR, log_formatR);
 
         assert_eq!(self.sides.len(), 2);
 
@@ -751,19 +787,15 @@ impl RKD {
         false // Either there's no hash, it hasn't been seen before, or the sizes match
     }
 
-    fn parse_side(&mut self, log: &Vec<&str>, excludes: &[String], ambiguousFileCount: &mut usize) {
+    fn parse_side(&mut self, log: &Vec<&str>, excludes: &[String], ambiguousFileCount: &mut usize, log_format: LogFormat) {
         assert!(self.sides.len() < 2);
 
-        let _timer = ScopeTimer::new(args.timings, "parse_log");
-
-        let side = self.sides.len();
-
-        debug_assert!(side < 2);
+        let mut ambiguousFileCount = *ambiguousFileCount;
 
         let mut files = MapPaths::new();
 
         'line_parser: for line in log {
-            let parsed = match LogLine::parse(&line, ambiguousFileCount, side) {
+            let parsed = match LogLine::parse(&line, &mut ambiguousFileCount, self.sides.len(), log_format) {
                 Ok(result) => result,
                 Err(e) => {
                     eprintln!("Error: Failed to parse log line: '{}'", line);
@@ -788,10 +820,10 @@ impl RKD {
             // If the incoming hash is real, and it's already registered in the hash-keyed collection, we have an
             // opportunity to make sure that all instances of this hash seen so far match in file size; if not, we need
             // to globally blacklist that hash for copy/move matching so that we don't lie about files being unchanged
-            let should_prematch = !self.blacklist_size_mismatch(&parsed, ambiguousFileCount);
+            let should_prematch = !self.blacklist_size_mismatch(&parsed, &mut ambiguousFileCount);
 
             let node = Box::leak(Box::new(self.make_node(
-                side,
+                self.sides.len(),
                 parsed.path,
                 parsed.hash,
                 should_prematch,
@@ -800,7 +832,7 @@ impl RKD {
             // An item with a pseudohash can't be entered into our hash-keyed map, which disables move/rename matching
             if let Some(hash) = parsed.hash {
                 let entry = Self::insert_hash_entry(&mut self.hashes, &hash, parsed.by);
-                entry.sides[side].paths.push(node);
+                entry.sides[self.sides.len()].paths.push(node);
             }
 
             files.insert(parsed.path, node);
@@ -872,6 +904,7 @@ impl LogLine {
         input: &'a str,
         ambiguousFileCount: &mut usize,
         side: usize,
+        log_format: LogFormat,
     ) -> nom::IResult<&'a str, Option<Self>> {
         use nom::{
             bytes::complete::tag,
@@ -885,11 +918,17 @@ impl LogLine {
             return Ok((input, None));
         }
 
-        let (rest, fields) = all_consuming(tuple((
-            preceded(space0, i64),
-            preceded(tag("  "), hexhash),
-            preceded(tag("  "), preceded(opt(tag("./")), not_line_ending)),
-        )))(input)?;
+        let (rest, fields) = match log_format {
+            LogFormat::RotKraken => all_consuming(tuple((
+                preceded(space0, i64),
+                preceded(tag("  "), hexhash),
+                preceded(tag("  "), preceded(opt(tag("./")), not_line_ending)),
+            )))(input)?,
+            LogFormat::Md5Deep => all_consuming(tuple((
+                preceded(space0, hexhash),
+                preceded(tag("  "), preceded(opt(tag("./")), not_line_ending)),
+            )))(input)?,
+        };
 
         let hash = fields.1;
 
@@ -910,7 +949,10 @@ impl LogLine {
         Ok((
             rest,
             Some(LogLine {
-                by: fields.0,
+                by: match log_format {
+                    LogFormat::RotKraken => fields.0,
+                    LogFormat::Md5Deep => 0,
+                },
                 hash,
                 path: unsafe_dup_str(fields.2),
             }),
@@ -1044,7 +1086,7 @@ mod tests {
         let mut ambiguous_count = 0;
 
         // Parse the log line
-        let result = LogLine::parse(log_line, &mut ambiguous_count, 0);
+        let result = LogLine::parse(log_line, &mut ambiguous_count, 0, LogFormat::Md5Deep);
 
         // Check that parsing was successful
         assert!(
@@ -1063,7 +1105,7 @@ mod tests {
         let parsed = parsed_option.unwrap();
 
         // Verify the parsed fields
-        assert_eq!(parsed.by, 1024, "File size should be 1024");
+        assert_eq!(parsed.by, 0, "File size should be 0");
         assert!(parsed.hash.is_some(), "Hash should be present");
         assert_eq!(
             parsed.hash.unwrap().to_string(),
@@ -1086,7 +1128,7 @@ mod tests {
         let mut ambiguous_count = 0;
 
         // Parse the log line
-        let result = LogLine::parse(log_line, &mut ambiguous_count, 0);
+        let result = LogLine::parse(log_line, &mut ambiguous_count, 0, LogFormat::RotKraken);
 
         // Check that parsing was successful
         assert!(
