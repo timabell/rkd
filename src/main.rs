@@ -1,9 +1,10 @@
-﻿// RKD - RotKraken Delta
-// Copyright © luxagen, 2023-present; portions copyright © Tim Abell, 2025
+// RKD - RotKraken Delta
+// Copyright  luxagen, 2023-present; portions copyright  Tim Abell, 2025
 
 #![allow(nonstandard_style)]
 
-use std::io::{self,BufRead};
+use std::error::Error;
+use std::io::{self, BufRead};
 use ahash::AHashMap;
 
 static DISABLE_OUTPUT: bool = false;
@@ -364,7 +365,14 @@ fn main()
 
 	// exit() is here to prevent destructors from being run, which adds a second or two to runtime
 	std::process::exit(
-		rkd.diff(&logL,&logR));
+		rkd.diff(&logL,&logR).unwrap_or_else(|e| {
+			use inline_colorization::*;
+			const cbr: &str = color_bright_red;
+			const cr: &str = color_reset;
+
+			eprintln!("{cbr}[ERROR]: {cr}{}", e);
+			1 // exit with exit code 1 to indicate failure
+		}));
 }
 
 enum FSOp<'a>
@@ -545,14 +553,14 @@ impl RKD
 		}
 	}
 
-	fn diff(&mut self,logL: &Vec<&str>,logR: &Vec<&str>) -> i32
+	fn diff(&mut self,logL: &Vec<&str>,logR: &Vec<&str>) -> Result<i32, Box<dyn Error>>
 	{
 		assert_eq!(self.sides.len(),0);
 
 		let mut ambiguousFileCountL=0;
 		let mut ambiguousFileCountR=0;
-		self.parse_side(&logL,&args.exclude,&mut ambiguousFileCountL);
-		self.parse_side(&logR,&args.exclude,&mut ambiguousFileCountR);
+		self.parse_side(&logL,&args.exclude,&mut ambiguousFileCountL)?;
+		self.parse_side(&logR,&args.exclude,&mut ambiguousFileCountR)?;
 
 		assert_eq!(self.sides.len(),2);
 
@@ -568,7 +576,7 @@ impl RKD
 			eprintln!("{cby}[WARNING] Ambiguous files: < {}, > {}{cr}",ambiguousFileCountL,ambiguousFileCountR);
 		}
 
-		0
+		Ok(0)
 	}
 
 	fn diff_remaining(&self)
@@ -722,11 +730,9 @@ impl RKD
 		false // Either there's no hash, it hasn't been seen before, or the sizes match
 	}
 
-	fn parse_side(&mut self,log: &Vec<&str>,excludes: &[String],ambiguousFileCount: &mut usize)
+	fn parse_side(&mut self, log: &Vec<&str>, excludes: &[String], ambiguousFileCount: &mut usize) -> Result<String, Box<dyn Error>>
 	{
 		assert!(self.sides.len() < 2);
-
-		let _timer = ScopeTimer::new(args.timings,"parse_log");
 
 		let side = self.sides.len();
 
@@ -736,14 +742,7 @@ impl RKD
 
 		'line_parser: for line in log 
 		{
-			let parsed = match LogLine::parse(&line,ambiguousFileCount,side) {
-				Ok(result) => result,
-				Err(e) => {
-					eprintln!("Error: Failed to parse log line: '{}'", line);
-					eprintln!("Expected format: <size>  <md5hash>  <filepath>");
-					panic!("Parsing error: {}", e);
-				}
-			}.1;
+			let parsed = LogLine::parse(&line, ambiguousFileCount, side)?;
 
 			if parsed.is_none() {continue;}
 
@@ -760,7 +759,7 @@ impl RKD
 			// If the incoming hash is real, and it's already registered in the hash-keyed collection, we have an 
 			// opportunity to make sure that all instances of this hash seen so far match in file size; if not, we need 
 			// to globally blacklist that hash for copy/move matching so that we don't lie about files being unchanged
-			let should_prematch = !self.blacklist_size_mismatch(&parsed,ambiguousFileCount);
+			let should_prematch = !self.blacklist_size_mismatch(&parsed, ambiguousFileCount);
 
 			let node = Box::leak(
 				Box::new(
@@ -782,6 +781,8 @@ impl RKD
 		}
 
 		self.sides.push(files);
+
+		Ok(())
 	}
 }
 
@@ -871,7 +872,7 @@ fn hexhash(input: &str) -> nom::IResult<&str,Option<Hash>>
 
 impl LogLine
 {
-	fn parse<'a>(input: &'a str,ambiguousFileCount: &mut usize,side: usize) -> nom::IResult<&'a str,Option<Self>>
+	fn parse<'a>(input: &'a str,ambiguousFileCount: &mut usize,side: usize) -> Result<nom::IResult<&'a str,Option<Self>>, Box<dyn Error>>
 	{
 		use nom::{
 			sequence::*,
