@@ -1038,6 +1038,48 @@ mod tests {
     }
 
     #[test]
+    fn test_md5deep_log_line_parse_success() {
+        // Example of a valid log line in the format: <size>  <md5hash>  <filepath>
+        let log_line = "7d9c8a8f75cfd85dfbe8d4ec4b2d5c3e  /path/to/some/file.txt";
+        let mut ambiguous_count = 0;
+
+        // Parse the log line
+        let result = LogLine::parse(log_line, &mut ambiguous_count, 0);
+
+        // Check that parsing was successful
+        assert!(
+            result.is_ok(),
+            "Parsing should succeed for a valid log line"
+        );
+
+        let (rest, parsed_option) = result.unwrap();
+
+        // Check that the rest of the input is empty
+        assert!(rest.is_empty(), "All input should be consumed");
+
+        // Check that we got a Some value
+        assert!(parsed_option.is_some(), "Parsed result should be Some");
+
+        let parsed = parsed_option.unwrap();
+
+        // Verify the parsed fields
+        assert_eq!(parsed.by, 1024, "File size should be 1024");
+        assert!(parsed.hash.is_some(), "Hash should be present");
+        assert_eq!(
+            parsed.hash.unwrap().to_string(),
+            "7d9c8a8f75cfd85dfbe8d4ec4b2d5c3e",
+            "Hash should match"
+        );
+        assert_eq!(parsed.path, "/path/to/some/file.txt", "Path should match");
+
+        // Verify ambiguous count wasn't incremented
+        assert_eq!(
+            ambiguous_count, 0,
+            "Ambiguous count should not be incremented for valid hash"
+        );
+    }
+
+    #[test]
     fn test_log_line_parse_success() {
         // Example of a valid log line in the format: <size>  <md5hash>  <filepath>
         let log_line = "1024  7d9c8a8f75cfd85dfbe8d4ec4b2d5c3e  /path/to/some/file.txt";
