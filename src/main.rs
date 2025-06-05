@@ -64,6 +64,19 @@ impl std::fmt::Debug for Hash {
     }
 }
 
+impl std::fmt::Display for Hash {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // Convert the u128 value to bytes for hex encoding
+        let bytes = self.0.to_be_bytes();
+        let mut hex_output = [0u8; 32]; // 16 bytes -> 32 hex chars
+        faster_hex::hex_encode(&bytes, &mut hex_output).unwrap();
+
+        // Convert the raw bytes to a str and write it
+        let hex_str = std::str::from_utf8(&hex_output).unwrap();
+        write!(f, "{}", hex_str)
+    }
+}
+
 struct ScopeTimer {
     start: std::time::Instant,
     context: Option<&'static str>,
@@ -1022,5 +1035,47 @@ mod tests {
 
         // Confirm the debug representation also matches
         assert_eq!(format!("{:?}", expected), format!("{:?}", from_string));
+    }
+
+    #[test]
+    fn test_log_line_parse_success() {
+        // Example of a valid log line in the format: <size>  <md5hash>  <filepath>
+        let log_line = "1024  7d9c8a8f75cfd85dfbe8d4ec4b2d5c3e  /path/to/some/file.txt";
+        let mut ambiguous_count = 0;
+
+        // Parse the log line
+        let result = LogLine::parse(log_line, &mut ambiguous_count, 0);
+
+        // Check that parsing was successful
+        assert!(
+            result.is_ok(),
+            "Parsing should succeed for a valid log line"
+        );
+
+        let (rest, parsed_option) = result.unwrap();
+
+        // Check that the rest of the input is empty
+        assert!(rest.is_empty(), "All input should be consumed");
+
+        // Check that we got a Some value
+        assert!(parsed_option.is_some(), "Parsed result should be Some");
+
+        let parsed = parsed_option.unwrap();
+
+        // Verify the parsed fields
+        assert_eq!(parsed.by, 1024, "File size should be 1024");
+        assert!(parsed.hash.is_some(), "Hash should be present");
+        assert_eq!(
+            parsed.hash.unwrap().to_string(),
+            "7d9c8a8f75cfd85dfbe8d4ec4b2d5c3e",
+            "Hash should match"
+        );
+        assert_eq!(parsed.path, "/path/to/some/file.txt", "Path should match");
+
+        // Verify ambiguous count wasn't incremented
+        assert_eq!(
+            ambiguous_count, 0,
+            "Ambiguous count should not be incremented for valid hash"
+        );
     }
 }
